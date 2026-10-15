@@ -1,0 +1,80 @@
+name: orq-federation-demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ORQ_HOST: https://my.staging.orq.ai
+
+jobs:
+  allowed:
+    name: "Scenario 1: rule matches (actor = haroldorquesta)"
+    runs-on: ubuntu-latest
+    env:
+      ORQ_AUDIENCE: ${{ vars.ORQ_AUDIENCE_ALLOWED }}
+    steps:
+      - name: 1. Get a GitHub OIDC token
+        run: |
+          token=$(curl -sS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${ORQ_AUDIENCE}" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r .value)
+          echo "::add-mask::${token}"
+          echo "GH_TOKEN_JWT=${token}" >> "$GITHUB_ENV"
+          echo "Claims Orq.ai will check:"
+          jq -R 'split(".")[1] | gsub("-";"+") | gsub("_";"/") | . + "=" * ((4 - length % 4) % 4) | @base64d | fromjson
+            | {iss, aud, sub, repository_id, actor, ref, event_name}' <<< "${token}"
+
+      - name: 2. Exchange it for a short-lived Orq.ai key
+        run: |
+          response=$(curl -sS -X POST "${ORQ_HOST}/v2/auth/federation/token" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            --data-urlencode "subject_token=${GH_TOKEN_JWT}" \
+            --data-urlencode "audience=${ORQ_AUDIENCE}")
+          key=$(jq -r '.access_token // empty' <<< "${response}")
+          if [ -z "${key}" ]; then echo "Exchange failed: ${response}"; exit 1; fi
+          echo "::add-mask::${key}"
+          echo "ORQ_API_KEY=${key}" >> "$GITHUB_ENV"
+          echo "Key issued. Expires in $(jq -r .expires_in <<< "${response}")s"
+
+      - name: 3. Call the AI Gateway with it
+        run: |
+          curl -sS --fail-with-body "${ORQ_HOST}/v2/router/chat/completions" \
+            -H "Authorization: Bearer ${ORQ_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"openai/gpt-5.4-mini","messages":[{"role":"user","content":"Say hello to the team in one sentence."}]}' \
+            | jq -r '.choices[0].message.content'
+
+  denied:
+    name: "Scenario 2: rule does not match (actor = octocat)"
+    runs-on: ubuntu-latest
+    env:
+      ORQ_AUDIENCE: ${{ vars.ORQ_AUDIENCE_DENIED }}
+    steps:
+      - name: 1. Get a GitHub OIDC token
+        run: |
+          token=$(curl -sS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${ORQ_AUDIENCE}" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r .value)
+          echo "::add-mask::${token}"
+          echo "GH_TOKEN_JWT=${token}" >> "$GITHUB_ENV"
+          echo "Claims Orq.ai will check:"
+          jq -R 'split(".")[1] | gsub("-";"+") | gsub("_";"/") | . + "=" * ((4 - length % 4) % 4) | @base64d | fromjson
+            | {iss, aud, sub, repository_id, actor, ref, event_name}' <<< "${token}"
+          echo "This trust configuration only accepts actor = octocat."
+
+      - name: 2. Exchange it (expected to be refused)
+        run: |
+          response=$(curl -sS -X POST "${ORQ_HOST}/v2/auth/federation/token" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            --data-urlencode "subject_token=${GH_TOKEN_JWT}" \
+            --data-urlencode "audience=${ORQ_AUDIENCE}")
+          if jq -e '.access_token' <<< "${response}" > /dev/null 2>&1; then
+            echo "::error::A key was issued even though the claim rule does not match."
+            exit 1
+          fi
+          echo "Orq.ai response: ${response}"
+          echo "::notice title=No key issued::actor=${GITHUB_ACTOR} does not match the claim rule, so Orq.ai refused the exchange."
