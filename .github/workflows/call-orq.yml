@@ -19,7 +19,7 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${ORQ_AUDIENCE}" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r .value)
 
-          response=$(curl -sS -X POST https://my.orq.ai/v2/auth/federation/token \
+          response=$(curl -sS -X POST https://my.staging.orq.ai/v2/auth/federation/token \
             --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
             --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
             --data-urlencode "subject_token=${subject_token}" \
