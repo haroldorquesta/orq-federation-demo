@@ -1,0 +1,46 @@
+name: call-orq
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      ORQ_AUDIENCE: ${{ vars.ORQ_AUDIENCE }}
+    steps:
+      - name: Exchange the GitHub token for an Orq.ai API key
+        run: |
+          subject_token=$(curl -sS \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${ORQ_AUDIENCE}" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r .value)
+
+          response=$(curl -sS -X POST https://my.orq.ai/v2/auth/federation/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+            --data-urlencode "subject_token=${subject_token}" \
+            --data-urlencode "audience=${ORQ_AUDIENCE}")
+
+          orq_api_key=$(jq -r '.access_token // empty' <<< "${response}")
+          if [ -z "${orq_api_key}" ]; then
+            echo "Token exchange failed: $(jq -r '.error // .error_description // "unparseable exchange response"' <<< "${response}" 2>/dev/null || echo "unparseable exchange response")"
+            exit 1
+          fi
+
+          echo "::add-mask::${orq_api_key}"
+          echo "ORQ_API_KEY=${orq_api_key}" >> "$GITHUB_ENV"
+
+      - name: Call the AI Gateway with the Orq.ai CLI
+        env:
+          ORQ_NO_INPUT: 1
+        run: |
+          npm install -g @orq-ai/cli
+          orq chat create \
+            --model openai/gpt-5.4-mini \
+            --messages '[{"role": "user", "content": "Write a professional email"}]' \
+            -o json -j 'choices[0].message.content' --raw
