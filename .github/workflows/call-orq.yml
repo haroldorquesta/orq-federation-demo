@@ -39,7 +39,7 @@ jobs:
           ORQ_NO_INPUT: 1
         run: |
           npm install -g @orq-ai/cli
-          orq chat create \
+          orq --server https://my.staging.orq.ai chat create \
             --model openai/gpt-5.4-mini \
             --messages '[{"role": "user", "content": "Write a professional email"}]' \
             -o json -j 'choices[0].message.content' --raw
